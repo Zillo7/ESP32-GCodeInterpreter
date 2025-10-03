@@ -150,31 +150,80 @@ void startHomingMove(int idx, bool towardHome, long steps, int speed, int phase)
   ledcStartIfValid(idx, motors[idx].freq);
 }
 
+bool homingSwitchActive(int idx) {
+  if (homingPins[idx] == -1) {
+    return false;
+  }
+  return digitalRead(homingPins[idx]) == HIGH;
+}
+
+void handleHomingSwitchTriggered(int idx, int prevPhase);
+
+void beginSlowApproach(int idx) {
+  long approachSteps = distToMove[idx];
+  if (approachSteps <= 0) {
+    approachSteps = 1;
+  }
+  int speed = homeSlowSpeed[idx] > 0 ? homeSlowSpeed[idx] : 1;
+  bool towardHome = homeDir[idx] > 0;
+
+  if (homingSwitchActive(idx)) {
+    stopMotorIdx(idx);
+    std::string axis(1, motors[idx].axisName);
+    WriteLine("Homing failed for axis " + axis + " (switch remained active)");
+    return;
+  }
+
+  startHomingMove(idx, towardHome, approachSteps, speed, 2);
+
+  if (homingSwitchActive(idx)) {
+    // If the switch is already active, immediately treat as a hit.
+    int prevPhase = 2;
+    stopMotorIdx(idx);
+    handleHomingSwitchTriggered(idx, prevPhase);
+  }
+}
+
+void handleHomingSwitchTriggered(int idx, int prevPhase) {
+  bool towardHome = homeDir[idx] > 0;
+  bool awayDir = !towardHome;
+  if (prevPhase == 0) {
+    long pullOff = homePullOffSteps[idx];
+    int speed = homeSpeed[idx] > 0 ? homeSpeed[idx] : 1;
+    if (pullOff > 0) {
+      startHomingMove(idx, awayDir, pullOff, speed, 1);
+    } else {
+      beginSlowApproach(idx);
+    }
+    return;
+  }
+
+  if (prevPhase == 2) {
+    motors[idx].currentPos = 0;
+    motors[idx].targetPos = 0;
+    motors[idx].homingPhase = 0;
+    motors[idx].homing = false;
+    std::string axis(1, motors[idx].axisName);
+    WriteLine("Homing complete for axis " + axis);
+    return;
+  }
+}
+
 void handleHomingMoveComplete(int idx) {
   if (!motors[idx].homing) {
     stopMotorIdx(idx);
     return;
   }
 
-  if (motors[idx].homingPhase == 1) {
-    long approachSteps = distToMove[idx];
-    if (approachSteps <= 0) {
-      approachSteps = 1;
-    }
-    int speed = homeSlowSpeed[idx] > 0 ? homeSlowSpeed[idx] : 1;
-    bool towardHome = homeDir[idx] > 0;
-    startHomingMove(idx, towardHome, approachSteps, speed, 2);
-    return;
-  }
-
-  if (motors[idx].homingPhase == 2) {
-    stopMotorIdx(idx);
-    std::string axis(1, motors[idx].axisName);
-    WriteLine("Homing failed for axis " + axis + " (switch not detected)");
+  int phase = motors[idx].homingPhase;
+  if (phase == 1) {
+    beginSlowApproach(idx);
     return;
   }
 
   stopMotorIdx(idx);
+  std::string axis(1, motors[idx].axisName);
+  WriteLine("Homing failed for axis " + axis + " (switch not detected)");
 }
 
 void startHomingSequence(int idx) {
@@ -182,20 +231,25 @@ void startHomingSequence(int idx) {
     return;
   }
   motors[idx].axisName = AxesNames[idx];
+  bool towardHome = homeDir[idx] > 0;
+  bool switchActive = homingSwitchActive(idx);
+
+  if (!switchActive) {
+    long seekSteps = distToMove[idx];
+    if (seekSteps <= 0) {
+      seekSteps = 1;
+    }
+    int fastSpeed = homeSpeed[idx] > 0 ? homeSpeed[idx] : 1;
+    startHomingMove(idx, towardHome, seekSteps, fastSpeed, 0);
+    return;
+  }
+
   long pullOff = homePullOffSteps[idx];
   int fastSpeed = homeSpeed[idx] > 0 ? homeSpeed[idx] : 1;
-  bool towardHome = homeDir[idx] > 0;
-  bool awayDir = !towardHome;
-
   if (pullOff > 0) {
-    startHomingMove(idx, awayDir, pullOff, fastSpeed, 1);
+    startHomingMove(idx, !towardHome, pullOff, fastSpeed, 1);
   } else {
-    long approachSteps = distToMove[idx];
-    if (approachSteps <= 0) {
-      approachSteps = 1;
-    }
-    int speed = homeSlowSpeed[idx] > 0 ? homeSlowSpeed[idx] : 1;
-    startHomingMove(idx, towardHome, approachSteps, speed, 2);
+    beginSlowApproach(idx);
   }
 }
 
@@ -211,16 +265,12 @@ void serviceMotors() {
   unsigned long now = micros();
   for (int i = 0; i < 6; i++) {
     if (!motors[i].moving) continue;
-    // Homing: stop if switch becomes active during slow approach phase
-    if (motors[i].homing && motors[i].homingPhase == 2 && homingPins[i] > -1) {
-      int sw = digitalRead(homingPins[i]);
-      if (sw == HIGH) {  // assuming active HIGH; adjust if needed
+    if (motors[i].homing && homingPins[i] > -1) {
+      int phase = motors[i].homingPhase;
+      if ((phase == 0 || phase == 2) && homingSwitchActive(i)) {
+        int prevPhase = phase;
         stopMotorIdx(i);
-        motors[i].currentPos = 0;
-        motors[i].targetPos = 0;
-        motors[i].homingPhase = 0;
-        std::string axis(1, motors[i].axisName);
-        WriteLine("Homing complete for axis " + axis);
+        handleHomingSwitchTriggered(i, prevPhase);
         continue;
       }
     }
