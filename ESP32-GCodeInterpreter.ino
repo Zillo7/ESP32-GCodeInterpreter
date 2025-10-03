@@ -1,5 +1,6 @@
 #include <ESP32Servo.h>
 #include <string>
+#include <cctype>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -21,6 +22,8 @@ int speeds[6] = { 3200, 600, 600, 600, 600, 600 };
 int homeDir[6] = { 0, 1, 1, 1, 1, 1 };
 int homeSpeed[6] = { 100, 50, 50, 50, 50, 50 };
 int distToMove[6] = { 1000, 2000, 2000, 2000, 2000, 2000 };
+int homePullOffSteps[6] = { 200, 200, 200, 200, 200, 200 };
+int homeSlowSpeed[6] = { 25, 25, 25, 25, 25, 25 };
 
 ///End Stepper Motors///
 
@@ -57,13 +60,25 @@ struct MotorState {
   long stepsRemaining = 0;  // steps to go
   bool moving = false;
   bool homing = false;
+  int homingPhase = 0;  // 0 none, 1 pull-off, 2 approach
   unsigned long lastMicros = 0;
   double freq = 0.0;   // Hz
   double accum = 0.0;  // fractional step accumulator
   bool dir = true;     // HIGH/LOW on dir pin
+  char axisName = '?';
 };
 
 MotorState motors[6];
+
+int axisIndexFromChar(char axis) {
+  axis = toupper(static_cast<unsigned char>(axis));
+  for (int i = 0; i < 6; ++i) {
+    if (AxesNames[i] == axis) {
+      return i;
+    }
+  }
+  return -1;
+}
 
 void ledcStartIfValid(int idx, double freqHz) {
   if (stepPins[idx] > -1) {
@@ -104,9 +119,11 @@ void startMoveTo(int idx, long target, int speedSPS) {
   motors[idx].stepsRemaining = delta > 0 ? delta : -delta;
   motors[idx].moving = true;
   motors[idx].homing = false;
+  motors[idx].homingPhase = 0;
   motors[idx].freq = speedSPS;
   motors[idx].accum = 0.0;
   motors[idx].lastMicros = micros();
+  motors[idx].axisName = AxesNames[idx];
   ledcStartIfValid(idx, motors[idx].freq);
 }
 
@@ -114,9 +131,78 @@ void startMoveRelative(int idx, long delta, int speedSPS) {
   startMoveTo(idx, motors[idx].currentPos + delta, speedSPS);
 }
 
+void startHomingMove(int idx, bool towardHome, long steps, int speed, int phase) {
+  if (stepPins[idx] == -1 || steps <= 0 || speed <= 0) {
+    return;
+  }
+  enableDriver(idx, true);
+  setDir(idx, towardHome);
+  motors[idx].homing = true;
+  motors[idx].homingPhase = phase;
+  motors[idx].moving = true;
+  motors[idx].stepsRemaining = steps;
+  motors[idx].freq = speed;
+  motors[idx].accum = 0.0;
+  motors[idx].lastMicros = micros();
+  motors[idx].dir = towardHome;
+  motors[idx].targetPos = motors[idx].currentPos + (towardHome ? steps : -steps);
+  motors[idx].axisName = AxesNames[idx];
+  ledcStartIfValid(idx, motors[idx].freq);
+}
+
+void handleHomingMoveComplete(int idx) {
+  if (!motors[idx].homing) {
+    stopMotorIdx(idx);
+    return;
+  }
+
+  if (motors[idx].homingPhase == 1) {
+    long approachSteps = distToMove[idx];
+    if (approachSteps <= 0) {
+      approachSteps = 1;
+    }
+    int speed = homeSlowSpeed[idx] > 0 ? homeSlowSpeed[idx] : 1;
+    bool towardHome = homeDir[idx] > 0;
+    startHomingMove(idx, towardHome, approachSteps, speed, 2);
+    return;
+  }
+
+  if (motors[idx].homingPhase == 2) {
+    stopMotorIdx(idx);
+    std::string axis(1, motors[idx].axisName);
+    WriteLine("Homing failed for axis " + axis + " (switch not detected)");
+    return;
+  }
+
+  stopMotorIdx(idx);
+}
+
+void startHomingSequence(int idx) {
+  if (stepPins[idx] == -1) {
+    return;
+  }
+  motors[idx].axisName = AxesNames[idx];
+  long pullOff = homePullOffSteps[idx];
+  int fastSpeed = homeSpeed[idx] > 0 ? homeSpeed[idx] : 1;
+  bool towardHome = homeDir[idx] > 0;
+  bool awayDir = !towardHome;
+
+  if (pullOff > 0) {
+    startHomingMove(idx, awayDir, pullOff, fastSpeed, 1);
+  } else {
+    long approachSteps = distToMove[idx];
+    if (approachSteps <= 0) {
+      approachSteps = 1;
+    }
+    int speed = homeSlowSpeed[idx] > 0 ? homeSlowSpeed[idx] : 1;
+    startHomingMove(idx, towardHome, approachSteps, speed, 2);
+  }
+}
+
 void stopMotorIdx(int idx) {
   motors[idx].moving = false;
   motors[idx].homing = false;
+  motors[idx].homingPhase = 0;
   motors[idx].stepsRemaining = 0;
   ledcStop(idx);
 }
@@ -125,13 +211,16 @@ void serviceMotors() {
   unsigned long now = micros();
   for (int i = 0; i < 6; i++) {
     if (!motors[i].moving) continue;
-    // Homing: stop if switch becomes active
-    if (motors[i].homing & homingPins[i] > -1) {
+    // Homing: stop if switch becomes active during slow approach phase
+    if (motors[i].homing && motors[i].homingPhase == 2 && homingPins[i] > -1) {
       int sw = digitalRead(homingPins[i]);
       if (sw == HIGH) {  // assuming active HIGH; adjust if needed
         stopMotorIdx(i);
         motors[i].currentPos = 0;
         motors[i].targetPos = 0;
+        motors[i].homingPhase = 0;
+        std::string axis(1, motors[i].axisName);
+        WriteLine("Homing complete for axis " + axis);
         continue;
       }
     }
@@ -145,7 +234,12 @@ void serviceMotors() {
       // Finish move
       long stepsDone = motors[i].stepsRemaining;
       motors[i].currentPos += (motors[i].dir ? stepsDone : -stepsDone);
-      stopMotorIdx(i);
+      motors[i].stepsRemaining = 0;
+      if (motors[i].homing) {
+        handleHomingMoveComplete(i);
+      } else {
+        stopMotorIdx(i);
+      }
     } else {
       motors[i].stepsRemaining -= whole;
       motors[i].currentPos += (motors[i].dir ? whole : -whole);
@@ -361,46 +455,29 @@ void ProcessInput(std::string input) {
 
   if (args[0] == "G28")  /////home/////
   {
-    // Simple homing: move toward homeDir until homing pin reads HIGH or max distance reached
-    auto startHoming = [&](int idx, int speed, int dist) {
-      if (stepPins[idx] == -1) return;
-      setDir(idx, homeDir[idx] > 0);
-      motors[idx].homing = true;
-      motors[idx].moving = true;
-      motors[idx].stepsRemaining = dist;
-      motors[idx].freq = speed;
-      motors[idx].accum = 0.0;
-      motors[idx].lastMicros = micros();
-      ledcStartIfValid(idx, motors[idx].freq);
-    };
     bool any = false;
     if (args.size() > 1) {
-      for (int x = 1; x < args.size(); x++) {
-        if (args[x][0] == 'X') {
-          startHoming(0, 50, distToMove[0]);
-          any = true;
-        } else if (args[x][0] == 'Y') {
-          startHoming(1, 50, distToMove[1]);
-          any = true;
-        } else if (args[x][0] == 'Z') {
-          startHoming(2, 50, distToMove[2]);
-          any = true;
-        } else if (args[x][0] == 'A') {
-          startHoming(3, 50, distToMove[3]);
-          any = true;
-        } else if (args[x][0] == 'B') {
-          startHoming(4, 50, distToMove[4]);
-          any = true;
-        } else if (args[x][0] == 'C') {
-          startHoming(5, 50, distToMove[5]);
+      for (size_t x = 1; x < args.size(); x++) {
+        if (args[x].empty()) continue;
+        int idx = axisIndexFromChar(args[x][0]);
+        if (idx > -1) {
+          if (motors[idx].moving) {
+            stopMotorIdx(idx);
+          }
+          startHomingSequence(idx);
           any = true;
         }
       }
     }
 
-    for (int x = 1; x < args.size(); x++) {
-      int i = x - 1;
-      if (args[x][0] == AxesNames[i]) { startHoming(i, homeSpeed[i], distToMove[i]); }
+    if (!any) {
+      for (int i = 0; i < 6; ++i) {
+        if (stepPins[i] == -1) continue;
+        if (motors[i].moving) {
+          stopMotorIdx(i);
+        }
+        startHomingSequence(i);
+      }
     }
 
     WriteLine(input + " ok");
