@@ -337,26 +337,26 @@ void ProcessInput(std::string input) {
         startMoveTo(i, tgt, speeds[i]);
       }
     }
-    WriteLine("G0/1 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "G2")  /////arc clockwise/////
   {
 
 
-    WriteLine("G2 ok");
+    WriteLine(input + " ok");
   }
   if (args[0] == "G3")  /////arc counter-clockwise/////
   {
 
 
-    WriteLine("G3 ok");
+    WriteLine(input + " ok");
   }
   if (args[0] == "G4")  /////dwell/////
   {
 
 
-    WriteLine("G4 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "G28")  /////home/////
@@ -403,7 +403,7 @@ void ProcessInput(std::string input) {
       if (args[x][0] == AxesNames[i]) { startHoming(i, homeSpeed[i], distToMove[i]); }
     }
 
-    WriteLine("G28 ok");
+    WriteLine(input + " ok");
   }
 
 
@@ -413,7 +413,7 @@ void ProcessInput(std::string input) {
       int i = x - 1;
       if (args[x][0] == AxesNames[i]) { motors[i].currentPos = std::stol(args[x].substr(1)); }
     }
-    WriteLine("G92 ok");
+    WriteLine(input + " ok");
   }
 
 
@@ -429,7 +429,7 @@ void ProcessInput(std::string input) {
         enableDriver(x, true);
       }
     }
-    WriteLine("M17 ok");
+    WriteLine(input + " ok");
   }
 
 
@@ -443,7 +443,7 @@ void ProcessInput(std::string input) {
     } else {
       for (int x = 0; x < (sizeof(AxesNames) / sizeof(AxesNames[0])); x++) { enableDriver(x, false); }
     }
-    WriteLine("M18 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M42")  /////set IO pin/////
@@ -483,7 +483,7 @@ void ProcessInput(std::string input) {
       }
     }
 
-    WriteLine("M42 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M43")  /////read IO pin(s)/////
@@ -507,18 +507,19 @@ void ProcessInput(std::string input) {
       }
       WriteLine(line);
     }
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M84")  /////Stop idle hold/////
   {
 
-    WriteLine("M84 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M112")  /////Full Stop (EStop)/////
   {
 
-    WriteLine("M112 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M114")  /////Get current position/////
@@ -528,11 +529,13 @@ void ProcessInput(std::string input) {
       if (stepPins[i] > -1) { line = line + AxesNames[i] + ":" + std::to_string(motors[i].currentPos); }
     }
     WriteLine(line);
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M115")  /////Get machine name/////
   {
     WriteLine("MACHINE_TYPE:" + MachineName);
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M119")  /////Endstop status/////
@@ -544,13 +547,14 @@ void ProcessInput(std::string input) {
       if (homingPins[i] > -1) { line = line + AxesNames[i] + ":" + std::to_string(digitalRead(homingPins[i]) == HIGH); }
     }
     WriteLine(line);
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M201")  /////Set acceleration (ignored in LEDC constant-speed mode)/////
   {
     // Parse but ignore; report ok so G-code senders don't error out
     // Example accepted forms: "M201 X1000 Y2000" etc.
-    WriteLine("M201 ok (ignored: constant-speed LEDC)");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M203")  /////Set feedrate/////
@@ -562,7 +566,7 @@ void ProcessInput(std::string input) {
         speeds[i] = speeds[i];
       }
     }
-    WriteLine("M203 ok");
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M279")  /////Get servo position/////
@@ -573,6 +577,7 @@ void ProcessInput(std::string input) {
       if (servoPins[i] > -1) { line = line + AxesNames[i] + ":" + std::to_string(servos[i].read()) + " "; }
     }
     WriteLine(line);
+    WriteLine(input + " ok");
   }
 
   if (args[0] == "M280")  /////Set servo position/////
@@ -599,6 +604,6 @@ void ProcessInput(std::string input) {
       }
     }
 
-    WriteLine("M280 ok");
+    WriteLine(input + " ok");
   }
 }
