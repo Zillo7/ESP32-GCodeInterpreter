@@ -1,6 +1,7 @@
 #include <ESP32Servo.h>
 #include <string>
 #include <cctype>
+#include <cmath>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -24,6 +25,16 @@ int homeSpeed[6] = { 100, 50, 50, 50, 50, 50 };
 int distToMove[6] = { 1000, 2000, 2000, 2000, 2000, 2000 };
 int homePullOffSteps[6] = { 200, 200, 200, 200, 200, 200 };
 int homeSlowSpeed[6] = { 25, 25, 25, 25, 25, 25 };
+
+int encoderPinsA[6] = { -1, -1, -1, -1, -1, -1 };
+int encoderPinsB[6] = { -1, -1, -1, -1, -1, -1 };
+int encoderPPR[6] = { 0, 0, 0, 0, 0, 0 };
+int encoderLastState[6] = { 0, 0, 0, 0, 0, 0 };
+// Ratio of motor steps to each encoder count for closed-loop correction (0 = auto-calibrate)
+float motorStepsPerEncoderCount[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+bool closedLoopAxis[6] = { false, false, false, false, false, false };
+
+const long closedLoopToleranceSteps = 2;
 
 ///End Stepper Motors///
 
@@ -66,9 +77,21 @@ struct MotorState {
   double accum = 0.0;  // fractional step accumulator
   bool dir = true;     // HIGH/LOW on dir pin
   char axisName = '?';
+  long encoderCount = 0;      // raw encoder counts
+  double encoderPosition = 0; // scaled position in revolutions when PPR is set
+  long moveStartPos = 0;
+  long moveStartEncoderCount = 0;
+  long encoderReferencePos = 0;
+  long encoderReferenceCount = 0;
+  double encoderCountsPerStep = 0.0;
 };
 
 MotorState motors[6];
+
+void syncEncoderReference(int idx);
+void setMotorLogicalPosition(int idx, long steps);
+bool encoderStepsEstimate(int idx, double& stepsOut);
+void maintainClosedLoopAxes();
 
 int axisIndexFromChar(char axis) {
   axis = toupper(static_cast<unsigned char>(axis));
@@ -112,6 +135,7 @@ void startMoveTo(int idx, long target, int speedSPS) {
     ledcStop(idx);
     motors[idx].moving = false;
     motors[idx].stepsRemaining = 0;
+    syncEncoderReference(idx);
     return;
   }
   bool d = (delta > 0);
@@ -124,6 +148,8 @@ void startMoveTo(int idx, long target, int speedSPS) {
   motors[idx].accum = 0.0;
   motors[idx].lastMicros = micros();
   motors[idx].axisName = AxesNames[idx];
+  motors[idx].moveStartPos = motors[idx].currentPos;
+  motors[idx].moveStartEncoderCount = motors[idx].encoderCount;
   ledcStartIfValid(idx, motors[idx].freq);
 }
 
@@ -147,6 +173,8 @@ void startHomingMove(int idx, bool towardHome, long steps, int speed, int phase)
   motors[idx].dir = towardHome;
   motors[idx].targetPos = motors[idx].currentPos + (towardHome ? steps : -steps);
   motors[idx].axisName = AxesNames[idx];
+  motors[idx].moveStartPos = motors[idx].currentPos;
+  motors[idx].moveStartEncoderCount = motors[idx].encoderCount;
   ledcStartIfValid(idx, motors[idx].freq);
 }
 
@@ -199,10 +227,11 @@ void handleHomingSwitchTriggered(int idx, int prevPhase) {
   }
 
   if (prevPhase == 2) {
-    motors[idx].currentPos = 0;
-    motors[idx].targetPos = 0;
     motors[idx].homingPhase = 0;
     motors[idx].homing = false;
+    motors[idx].encoderCount = 0;
+    motors[idx].encoderPosition = 0;
+    setMotorLogicalPosition(idx, 0);
     std::string axis(1, motors[idx].axisName);
     WriteLine("Homing complete for axis " + axis);
     return;
@@ -253,12 +282,115 @@ void startHomingSequence(int idx) {
   }
 }
 
+void syncEncoderReference(int idx) {
+  motors[idx].encoderReferencePos = motors[idx].currentPos;
+  motors[idx].encoderReferenceCount = motors[idx].encoderCount;
+}
+
+void setMotorLogicalPosition(int idx, long steps) {
+  motors[idx].currentPos = steps;
+  motors[idx].targetPos = steps;
+  syncEncoderReference(idx);
+}
+
 void stopMotorIdx(int idx) {
   motors[idx].moving = false;
   motors[idx].homing = false;
   motors[idx].homingPhase = 0;
   motors[idx].stepsRemaining = 0;
+  motors[idx].targetPos = motors[idx].currentPos;
+  syncEncoderReference(idx);
   ledcStop(idx);
+}
+
+void serviceEncoders() {
+  for (int i = 0; i < 6; ++i) {
+    if (encoderPinsA[i] == -1 || encoderPinsB[i] == -1) {
+      continue;
+    }
+
+    int a = digitalRead(encoderPinsA[i]);
+    int b = digitalRead(encoderPinsB[i]);
+    int state = (a << 1) | b;
+    int last = encoderLastState[i];
+
+    if (state == last) {
+      continue;
+    }
+
+    int transition = (last << 2) | state;
+    int delta = 0;
+
+    switch (transition) {
+      case 0b0001:
+      case 0b0111:
+      case 0b1110:
+      case 0b1000:
+        delta = 1;
+        break;
+      case 0b0010:
+      case 0b0100:
+      case 0b1101:
+      case 0b1011:
+        delta = -1;
+        break;
+      default:
+        delta = 0;
+        break;
+    }
+
+    if (delta != 0) {
+      motors[i].encoderCount += delta;
+      if (encoderPPR[i] > 0) {
+        motors[i].encoderPosition = (double)motors[i].encoderCount / (double)encoderPPR[i];
+      } else {
+        motors[i].encoderPosition = (double)motors[i].encoderCount;
+      }
+    }
+
+    encoderLastState[i] = state;
+  }
+}
+
+bool encoderStepsEstimate(int idx, double& stepsOut) {
+  double deltaCounts = (double)(motors[idx].encoderCount - motors[idx].encoderReferenceCount);
+  double stepsPerCount = (double)motorStepsPerEncoderCount[idx];
+  if (std::fabs(stepsPerCount) > 1e-6) {
+    stepsOut = (double)motors[idx].encoderReferencePos + (deltaCounts * stepsPerCount);
+    return true;
+  }
+
+  double countsPerStep = motors[idx].encoderCountsPerStep;
+  if (std::fabs(countsPerStep) < 1e-6) {
+    return false;
+  }
+  stepsOut = (double)motors[idx].encoderReferencePos + (deltaCounts / countsPerStep);
+  return true;
+}
+
+void maintainClosedLoopAxes() {
+  for (int i = 0; i < 6; ++i) {
+    if (!closedLoopAxis[i]) continue;
+    if (stepPins[i] == -1) continue;
+    if (encoderPinsA[i] == -1 || encoderPinsB[i] == -1) continue;
+    if (motors[i].moving) continue;
+    if (motors[i].homing) continue;
+
+    double estimatedSteps = 0.0;
+    if (!encoderStepsEstimate(i, estimatedSteps)) {
+      continue;
+    }
+
+    long estimatedRounded = (long)std::lround(estimatedSteps);
+    motors[i].currentPos = estimatedRounded;
+    long desired = motors[i].targetPos;
+    long error = desired - estimatedRounded;
+    long absError = error >= 0 ? error : -error;
+    if (absError >= closedLoopToleranceSteps) {
+      int correctionSpeed = speeds[i] > 0 ? speeds[i] : 1;
+      startMoveTo(i, desired, correctionSpeed);
+    }
+  }
 }
 
 void serviceMotors() {
@@ -285,6 +417,14 @@ void serviceMotors() {
       long stepsDone = motors[i].stepsRemaining;
       motors[i].currentPos += (motors[i].dir ? stepsDone : -stepsDone);
       motors[i].stepsRemaining = 0;
+      long stepDelta = motors[i].currentPos - motors[i].moveStartPos;
+      long encoderDelta = motors[i].encoderCount - motors[i].moveStartEncoderCount;
+      if (stepDelta != 0 && encoderDelta != 0) {
+        motors[i].encoderCountsPerStep = (double)encoderDelta / (double)stepDelta;
+      }
+      if (!motors[i].homing) {
+        syncEncoderReference(i);
+      }
       if (motors[i].homing) {
         handleHomingMoveComplete(i);
       } else {
@@ -402,6 +542,28 @@ void setup() {
       pinModes[i] = 1;
     }
   }
+  for (int i = 0; i < 6; i++) {
+    if (encoderPinsA[i] > -1) {
+      pinMode(encoderPinsA[i], INPUT);
+      if (encoderPinsA[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
+        pinModes[encoderPinsA[i]] = 1;
+      }
+    }
+    if (encoderPinsB[i] > -1) {
+      pinMode(encoderPinsB[i], INPUT);
+      if (encoderPinsB[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
+        pinModes[encoderPinsB[i]] = 1;
+      }
+    }
+    if (encoderPinsA[i] > -1 && encoderPinsB[i] > -1) {
+      int state = (digitalRead(encoderPinsA[i]) << 1) | digitalRead(encoderPinsB[i]);
+      encoderLastState[i] = state;
+      motors[i].encoderCount = 0;
+      motors[i].encoderPosition = 0;
+      motors[i].encoderReferencePos = motors[i].currentPos;
+      motors[i].encoderReferenceCount = motors[i].encoderCount;
+    }
+  }
   // LEDC attach step pins
   for (int i = 0; i < 6; i++) {
     if (stepPins[i] > -1) {
@@ -442,7 +604,9 @@ void loop() {
   readSerialLines();
   // Process one queued G-code line when motors are idle
   serviceGcodeQueue();
+  serviceEncoders();
   serviceMotors();
+  maintainClosedLoopAxes();
 }
 
 
@@ -538,7 +702,10 @@ void ProcessInput(std::string input) {
   {
     for (int x = 1; x < args.size(); x++) {
       int i = x - 1;
-      if (args[x][0] == AxesNames[i]) { motors[i].currentPos = std::stol(args[x].substr(1)); }
+      if (args[x][0] == AxesNames[i]) {
+        long newPos = std::stol(args[x].substr(1));
+        setMotorLogicalPosition(i, newPos);
+      }
     }
     WriteLine(input + " ok");
   }
@@ -653,7 +820,13 @@ void ProcessInput(std::string input) {
   {
     std::string line = "";
     for (int i = 0; i < (sizeof(AxesNames) / sizeof(AxesNames[0])); i++) {
-      if (stepPins[i] > -1) { line = line + AxesNames[i] + ":" + std::to_string(motors[i].currentPos); }
+      if (stepPins[i] > -1) {
+        line = line + AxesNames[i] + ":" + std::to_string(motors[i].currentPos);
+        if (encoderPinsA[i] > -1 && encoderPinsB[i] > -1) {
+          line = line + " Enc:" + std::to_string(motors[i].encoderPosition);
+        }
+        line = line + " ";
+      }
     }
     WriteLine(line);
     WriteLine(input + " ok");
