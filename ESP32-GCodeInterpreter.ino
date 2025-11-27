@@ -544,13 +544,13 @@ void setup() {
   }
   for (int i = 0; i < 6; i++) {
     if (encoderPinsA[i] > -1) {
-      pinMode(encoderPinsA[i], INPUT);
+      pinMode(encoderPinsA[i], INPUT_PULLUP);
       if (encoderPinsA[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsA[i]] = 1;
       }
     }
     if (encoderPinsB[i] > -1) {
-      pinMode(encoderPinsB[i], INPUT);
+      pinMode(encoderPinsB[i], INPUT_PULLUP);
       if (encoderPinsB[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsB[i]] = 1;
       }
