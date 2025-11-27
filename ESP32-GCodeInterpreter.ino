@@ -19,22 +19,22 @@ int dirPins[6] = { 12, -1, -1, -1, -1, -1 };
 int homingPins[6] = { 27, -1, -1, -1, -1, -1 };
 int eStopPins[6] = { 14, -1, -1, -1, -1, -1 };
 int enablePins[6] = { 14, 14, 14, 14, 14, 14 };
-int speeds[6] = { 3200, 600, 600, 600, 600, 600 };
-int homeDir[6] = { 0, 1, 1, 1, 1, 1 };
-int homeSpeed[6] = { 100, 50, 50, 50, 50, 50 };
-int distToMove[6] = { 1000, 2000, 2000, 2000, 2000, 2000 };
-int homePullOffSteps[6] = { 200, 200, 200, 200, 200, 200 };
-int homeSlowSpeed[6] = { 25, 25, 25, 25, 25, 25 };
+int speeds[6] = { 50, 600, 600, 600, 600, 600 };//3200
+int homeDir[6] = { -1, 1, 1, 1, 1, 1 };
+int homeSpeed[6] = { 150, 50, 50, 50, 50, 50 };
+int distToMove[6] = { 600, 2000, 2000, 2000, 2000, 2000 };
+int homePullOffSteps[6] = { 25, 200, 200, 200, 200, 200 };
+int homeSlowSpeed[6] = { 50, 25, 25, 25, 25, 25 };
 
-int encoderPinsA[6] = { -1, -1, -1, -1, -1, -1 };
-int encoderPinsB[6] = { -1, -1, -1, -1, -1, -1 };
-int encoderPPR[6] = { 0, 0, 0, 0, 0, 0 };
+int encoderPinsA[6] = { 22, -1, -1, -1, -1, -1 };
+int encoderPinsB[6] = { 23, -1, -1, -1, -1, -1 };
+int encoderPPR[6] = { 200, 0, 0, 0, 0, 0 };
 int encoderLastState[6] = { 0, 0, 0, 0, 0, 0 };
 // Ratio of motor steps to each encoder count for closed-loop correction (0 = auto-calibrate)
 float motorStepsPerEncoderCount[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-bool closedLoopAxis[6] = { false, false, false, false, false, false };
+bool closedLoopAxis[6] = { true, false, false, false, false, false };
 
-const long closedLoopToleranceSteps = 2;
+const long closedLoopToleranceSteps = 20;
 
 ///End Stepper Motors///
 
@@ -346,6 +346,7 @@ void serviceEncoders() {
       } else {
         motors[i].encoderPosition = (double)motors[i].encoderCount;
       }
+      WriteLine(motors[i].encoderPosition);
     }
 
     encoderLastState[i] = state;
@@ -544,13 +545,13 @@ void setup() {
   }
   for (int i = 0; i < 6; i++) {
     if (encoderPinsA[i] > -1) {
-      pinMode(encoderPinsA[i], INPUT_PULLUP);
+      pinMode(encoderPinsA[i], INPUT);
       if (encoderPinsA[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsA[i]] = 1;
       }
     }
     if (encoderPinsB[i] > -1) {
-      pinMode(encoderPinsB[i], INPUT_PULLUP);
+      pinMode(encoderPinsB[i], INPUT);
       if (encoderPinsB[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsB[i]] = 1;
       }
