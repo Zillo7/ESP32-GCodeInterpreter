@@ -5,7 +5,6 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
-#include <Encoder.h>
 
 
 ///Machine name - for instrument ID///
@@ -36,18 +35,6 @@ float motorStepsPerEncoderCount[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 bool closedLoopAxis[6] = { true, false, false, false, false, false };
 
 const long closedLoopToleranceSteps = 20;
-
-int encoderPinsA[6] = { -1, -1, -1, -1, -1, -1 };
-int encoderPinsB[6] = { -1, -1, -1, -1, -1, -1 };
-int encoderPPR[6] = { 0, 0, 0, 0, 0, 0 };
-bool encoderUsePullups[6] = { false, false, false, false, false, false };
-// Ratio of motor steps to each encoder count for closed-loop correction (0 = auto-calibrate)
-float motorStepsPerEncoderCount[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-bool closedLoopAxis[6] = { false, false, false, false, false, false };
-
-Encoder* encoderObjects[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
-
-const long closedLoopToleranceSteps = 2;
 
 ///End Stepper Motors///
 
@@ -242,9 +229,6 @@ void handleHomingSwitchTriggered(int idx, int prevPhase) {
   if (prevPhase == 2) {
     motors[idx].homingPhase = 0;
     motors[idx].homing = false;
-    if (encoderObjects[idx] != nullptr) {
-      encoderObjects[idx]->write(0);
-    }
     motors[idx].encoderCount = 0;
     motors[idx].encoderPosition = 0;
     setMotorLogicalPosition(idx, 0);
@@ -321,18 +305,51 @@ void stopMotorIdx(int idx) {
 
 void serviceEncoders() {
   for (int i = 0; i < 6; ++i) {
-    Encoder* enc = encoderObjects[i];
-    if (enc == nullptr) {
+    if (encoderPinsA[i] == -1 || encoderPinsB[i] == -1) {
       continue;
     }
 
-    long count = enc->read();
-    motors[i].encoderCount = count;
-    if (encoderPPR[i] > 0) {
-      motors[i].encoderPosition = (double)motors[i].encoderCount / (double)encoderPPR[i];
-    } else {
-      motors[i].encoderPosition = (double)motors[i].encoderCount;
+    int a = digitalRead(encoderPinsA[i]);
+    int b = digitalRead(encoderPinsB[i]);
+    int state = (a << 1) | b;
+    int last = encoderLastState[i];
+
+    if (state == last) {
+      continue;
     }
+
+    int transition = (last << 2) | state;
+    int delta = 0;
+
+    switch (transition) {
+      case 0b0001:
+      case 0b0111:
+      case 0b1110:
+      case 0b1000:
+        delta = 1;
+        break;
+      case 0b0010:
+      case 0b0100:
+      case 0b1101:
+      case 0b1011:
+        delta = -1;
+        break;
+      default:
+        delta = 0;
+        break;
+    }
+
+    if (delta != 0) {
+      motors[i].encoderCount += delta;
+      if (encoderPPR[i] > 0) {
+        motors[i].encoderPosition = (double)motors[i].encoderCount / (double)encoderPPR[i];
+      } else {
+        motors[i].encoderPosition = (double)motors[i].encoderCount;
+      }
+      WriteLine(motors[i].encoderPosition);
+    }
+
+    encoderLastState[i] = state;
   }
 }
 
@@ -356,7 +373,7 @@ void maintainClosedLoopAxes() {
   for (int i = 0; i < 6; ++i) {
     if (!closedLoopAxis[i]) continue;
     if (stepPins[i] == -1) continue;
-    if (encoderObjects[i] == nullptr) continue;
+    if (encoderPinsA[i] == -1 || encoderPinsB[i] == -1) continue;
     if (motors[i].moving) continue;
     if (motors[i].homing) continue;
 
@@ -528,24 +545,20 @@ void setup() {
   }
   for (int i = 0; i < 6; i++) {
     if (encoderPinsA[i] > -1) {
-      pinMode(encoderPinsA[i], encoderUsePullups[i] ? INPUT_PULLUP : INPUT);
+      pinMode(encoderPinsA[i], INPUT);
       if (encoderPinsA[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsA[i]] = 1;
       }
     }
     if (encoderPinsB[i] > -1) {
-      pinMode(encoderPinsB[i], encoderUsePullups[i] ? INPUT_PULLUP : INPUT);
+      pinMode(encoderPinsB[i], INPUT);
       if (encoderPinsB[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsB[i]] = 1;
       }
     }
     if (encoderPinsA[i] > -1 && encoderPinsB[i] > -1) {
-      if (encoderObjects[i] != nullptr) {
-        delete encoderObjects[i];
-        encoderObjects[i] = nullptr;
-      }
-      encoderObjects[i] = new Encoder(encoderPinsA[i], encoderPinsB[i]);
-      encoderObjects[i]->write(0);
+      int state = (digitalRead(encoderPinsA[i]) << 1) | digitalRead(encoderPinsB[i]);
+      encoderLastState[i] = state;
       motors[i].encoderCount = 0;
       motors[i].encoderPosition = 0;
       motors[i].encoderReferencePos = motors[i].currentPos;
