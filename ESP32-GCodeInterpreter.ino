@@ -30,11 +30,13 @@ int encoderPinsA[6] = { 22, -1, -1, -1, -1, -1 };
 int encoderPinsB[6] = { 23, -1, -1, -1, -1, -1 };
 int encoderPPR[6] = { 200, 0, 0, 0, 0, 0 };
 int encoderLastState[6] = { 0, 0, 0, 0, 0, 0 };
+int encoderDeltaAccumulator[6] = { 0, 0, 0, 0, 0, 0 };
 // Ratio of motor steps to each encoder count for closed-loop correction (0 = auto-calibrate)
 float motorStepsPerEncoderCount[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 bool closedLoopAxis[6] = { true, false, false, false, false, false };
 
 const long closedLoopToleranceSteps = 20;
+const long closedLoopDeadbandSteps = 3;
 
 ///End Stepper Motors///
 
@@ -140,6 +142,8 @@ void startMoveTo(int idx, long target, int speedSPS) {
   }
   bool d = (delta > 0);
   setDir(idx, d);
+  motors[idx].encoderReferencePos = motors[idx].currentPos;
+  motors[idx].encoderReferenceCount = motors[idx].encoderCount;
   motors[idx].stepsRemaining = delta > 0 ? delta : -delta;
   motors[idx].moving = true;
   motors[idx].homing = false;
@@ -299,7 +303,6 @@ void stopMotorIdx(int idx) {
   motors[idx].homingPhase = 0;
   motors[idx].stepsRemaining = 0;
   motors[idx].targetPos = motors[idx].currentPos;
-  syncEncoderReference(idx);
   ledcStop(idx);
 }
 
@@ -340,13 +343,23 @@ void serviceEncoders() {
     }
 
     if (delta != 0) {
-      motors[i].encoderCount += delta;
-      if (encoderPPR[i] > 0) {
-        motors[i].encoderPosition = (double)motors[i].encoderCount / (double)encoderPPR[i];
+      int accumulated = encoderDeltaAccumulator[i];
+      if (accumulated == 0 || (accumulated > 0 && delta > 0) || (accumulated < 0 && delta < 0)) {
+        encoderDeltaAccumulator[i] += delta;
       } else {
-        motors[i].encoderPosition = (double)motors[i].encoderCount;
+        encoderDeltaAccumulator[i] = delta;
       }
-      WriteLine(motors[i].encoderPosition);
+
+      if (std::abs(encoderDeltaAccumulator[i]) >= 2) {
+        motors[i].encoderCount += encoderDeltaAccumulator[i];
+        encoderDeltaAccumulator[i] = 0;
+        if (encoderPPR[i] > 0) {
+          motors[i].encoderPosition = (double)motors[i].encoderCount / (double)encoderPPR[i];
+        } else {
+          motors[i].encoderPosition = (double)motors[i].encoderCount;
+        }
+        WriteLine(motors[i].encoderPosition);
+      }
     }
 
     encoderLastState[i] = state;
@@ -383,10 +396,15 @@ void maintainClosedLoopAxes() {
     }
 
     long estimatedRounded = (long)std::lround(estimatedSteps);
-    motors[i].currentPos = estimatedRounded;
     long desired = motors[i].targetPos;
     long error = desired - estimatedRounded;
     long absError = error >= 0 ? error : -error;
+
+    if (absError < closedLoopDeadbandSteps) {
+      error = 0;
+      absError = 0;
+    }
+
     if (absError >= closedLoopToleranceSteps) {
       int correctionSpeed = speeds[i] > 0 ? speeds[i] : 1;
       startMoveTo(i, desired, correctionSpeed);
@@ -545,13 +563,15 @@ void setup() {
   }
   for (int i = 0; i < 6; i++) {
     if (encoderPinsA[i] > -1) {
-      pinMode(encoderPinsA[i], INPUT);
+      // Use pull-ups to keep quadrature inputs from floating when the motor is de-energized
+      pinMode(encoderPinsA[i], INPUT_PULLUP);
       if (encoderPinsA[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsA[i]] = 1;
       }
     }
     if (encoderPinsB[i] > -1) {
-      pinMode(encoderPinsB[i], INPUT);
+      // Use pull-ups to keep quadrature inputs from floating when the motor is de-energized
+      pinMode(encoderPinsB[i], INPUT_PULLUP);
       if (encoderPinsB[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsB[i]] = 1;
       }
