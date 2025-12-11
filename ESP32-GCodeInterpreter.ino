@@ -142,6 +142,8 @@ void startMoveTo(int idx, long target, int speedSPS) {
   }
   bool d = (delta > 0);
   setDir(idx, d);
+  motors[idx].encoderReferencePos = motors[idx].currentPos;
+  motors[idx].encoderReferenceCount = motors[idx].encoderCount;
   motors[idx].stepsRemaining = delta > 0 ? delta : -delta;
   motors[idx].moving = true;
   motors[idx].homing = false;
@@ -301,7 +303,6 @@ void stopMotorIdx(int idx) {
   motors[idx].homingPhase = 0;
   motors[idx].stepsRemaining = 0;
   motors[idx].targetPos = motors[idx].currentPos;
-  syncEncoderReference(idx);
   ledcStop(idx);
 }
 
@@ -402,10 +403,6 @@ void maintainClosedLoopAxes() {
     if (absError < closedLoopDeadbandSteps) {
       error = 0;
       absError = 0;
-      // Keep the logical position where it was commanded so subsequent
-      // moves stay relative to the last target instead of snapping to the
-      // current encoder reading.
-      syncEncoderReference(i);
     }
 
     if (absError >= closedLoopToleranceSteps) {
