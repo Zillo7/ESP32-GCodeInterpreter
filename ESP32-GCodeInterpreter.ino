@@ -395,7 +395,6 @@ void maintainClosedLoopAxes() {
     }
 
     long estimatedRounded = (long)std::lround(estimatedSteps);
-    motors[i].currentPos = estimatedRounded;
     long desired = motors[i].targetPos;
     long error = desired - estimatedRounded;
     long absError = error >= 0 ? error : -error;
@@ -403,7 +402,9 @@ void maintainClosedLoopAxes() {
     if (absError < closedLoopDeadbandSteps) {
       error = 0;
       absError = 0;
-      motors[i].targetPos = estimatedRounded;
+      // Keep the logical position where it was commanded so subsequent
+      // moves stay relative to the last target instead of snapping to the
+      // current encoder reading.
       syncEncoderReference(i);
     }
 
@@ -571,13 +572,15 @@ void setup() {
   }
   for (int i = 0; i < 6; i++) {
     if (encoderPinsA[i] > -1) {
-      pinMode(encoderPinsA[i], INPUT);
+      // Use pull-ups to keep quadrature inputs from floating when the motor is de-energized
+      pinMode(encoderPinsA[i], INPUT_PULLUP);
       if (encoderPinsA[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsA[i]] = 1;
       }
     }
     if (encoderPinsB[i] > -1) {
-      pinMode(encoderPinsB[i], INPUT);
+      // Use pull-ups to keep quadrature inputs from floating when the motor is de-energized
+      pinMode(encoderPinsB[i], INPUT_PULLUP);
       if (encoderPinsB[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
         pinModes[encoderPinsB[i]] = 1;
       }
