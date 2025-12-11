@@ -442,6 +442,12 @@ void serviceMotors() {
         motors[i].encoderCountsPerStep = (double)encoderDelta / (double)stepDelta;
       }
       if (!motors[i].homing) {
+        double estimatedSteps = 0.0;
+        if (encoderStepsEstimate(i, estimatedSteps)) {
+          long rounded = (long)std::lround(estimatedSteps);
+          motors[i].currentPos = rounded;
+          motors[i].targetPos = rounded;
+        }
         syncEncoderReference(i);
       }
       if (motors[i].homing) {
