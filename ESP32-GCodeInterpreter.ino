@@ -128,12 +128,12 @@ void setupPcntAxis(int idx) {
   }
   pcnt_config_t pcntConfig = {};
   pcntConfig.pulse_gpio_num = pcntPins[idx];
-  pcntConfig.ctrl_gpio_num = (dirPins[idx] > -1) ? dirPins[idx] : PCNT_PIN_NOT_USED;
+  pcntConfig.ctrl_gpio_num = PCNT_PIN_NOT_USED;
   pcntConfig.channel = PCNT_CHANNEL_0;
   pcntConfig.unit = static_cast<pcnt_unit_t>(idx);
   pcntConfig.pos_mode = PCNT_COUNT_INC;
   pcntConfig.neg_mode = PCNT_COUNT_DIS;
-  pcntConfig.lctrl_mode = PCNT_MODE_REVERSE;
+  pcntConfig.lctrl_mode = PCNT_MODE_KEEP;
   pcntConfig.hctrl_mode = PCNT_MODE_KEEP;
   pcntConfig.counter_h_lim = pcntCounterLimit;
   pcntConfig.counter_l_lim = -pcntCounterLimit;
