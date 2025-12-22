@@ -5,6 +5,7 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
+#include <driver/pcnt.h>
 
 
 ///Machine name - for instrument ID///
@@ -16,19 +17,20 @@ char AxesNames[6] = { 'X', 'Y', 'Z', 'A', 'B', 'C' };
 
 int stepPins[6] = { 13, -1, -1, -1, -1, -1 };  // X..C
 int dirPins[6] = { 12, -1, -1, -1, -1, -1 };
+int pcntPins[6] = { 19, -1, -1, -1, -1, -1 };
 int homingPins[6] = { 27, -1, -1, -1, -1, -1 };
 int eStopPins[6] = { 14, -1, -1, -1, -1, -1 };
 int enablePins[6] = { 14, 14, 14, 14, 14, 14 };
-int speeds[6] = { 50, 600, 600, 600, 600, 600 };//3200
+int speeds[6] = { 2200, 600, 600, 600, 600, 600 };//3200
 int homeDir[6] = { -1, 1, 1, 1, 1, 1 };
 int homeSpeed[6] = { 150, 50, 50, 50, 50, 50 };
 int distToMove[6] = { 600, 2000, 2000, 2000, 2000, 2000 };
 int homePullOffSteps[6] = { 25, 200, 200, 200, 200, 200 };
 int homeSlowSpeed[6] = { 50, 25, 25, 25, 25, 25 };
 
-int encoderPinsA[6] = { 22, -1, -1, -1, -1, -1 };
-int encoderPinsB[6] = { 23, -1, -1, -1, -1, -1 };
-int encoderPPR[6] = { 200, 0, 0, 0, 0, 0 };
+int encoderPinsA[6] = { -1, -1, -1, -1, -1, -1 };
+int encoderPinsB[6] = { -1, -1, -1, -1, -1, -1 };
+int encoderPPR[6] = { 0, 0, 0, 0, 0, 0 };//200
 int encoderLastState[6] = { 0, 0, 0, 0, 0, 0 };
 // Ratio of motor steps to each encoder count for closed-loop correction (0 = auto-calibrate)
 float motorStepsPerEncoderCount[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
@@ -84,9 +86,13 @@ struct MotorState {
   long encoderReferencePos = 0;
   long encoderReferenceCount = 0;
   double encoderCountsPerStep = 0.0;
+  long pcntLastCount = 0;
 };
 
 MotorState motors[6];
+bool pcntEnabled[6] = { false, false, false, false, false, false };
+const int pcntCounterLimit = 32767;
+const int pcntClearThreshold = 30000;
 
 void syncEncoderReference(int idx);
 void setMotorLogicalPosition(int idx, long steps);
@@ -115,6 +121,27 @@ void ledcStop(int idx) {
   }
 }
 
+void setupPcntAxis(int idx) {
+  if (pcntPins[idx] == -1) {
+    pcntEnabled[idx] = false;
+    return;
+  }
+  pcnt_config_t pcntConfig = {};
+  pcntConfig.pulse_gpio_num = pcntPins[idx];
+  pcntConfig.ctrl_gpio_num = PCNT_PIN_NOT_USED;
+  pcntConfig.channel = PCNT_CHANNEL_0;
+  pcntConfig.unit = static_cast<pcnt_unit_t>(idx);
+  pcntConfig.pos_mode = PCNT_COUNT_INC;
+  pcntConfig.neg_mode = PCNT_COUNT_DIS;
+  pcntConfig.lctrl_mode = PCNT_MODE_KEEP;
+  pcntConfig.hctrl_mode = PCNT_MODE_KEEP;
+  pcntConfig.counter_h_lim = pcntCounterLimit;
+  pcntConfig.counter_l_lim = -pcntCounterLimit;
+  pcnt_unit_config(&pcntConfig);
+  pcnt_counter_pause(pcntConfig.unit);
+  pcnt_counter_clear(pcntConfig.unit);
+  pcntEnabled[idx] = true;
+}
 
 void setDir(int idx, bool d) {
   if (dirPins[idx] > -1) digitalWrite(dirPins[idx], d ? HIGH : LOW);
@@ -150,6 +177,13 @@ void startMoveTo(int idx, long target, int speedSPS) {
   motors[idx].axisName = AxesNames[idx];
   motors[idx].moveStartPos = motors[idx].currentPos;
   motors[idx].moveStartEncoderCount = motors[idx].encoderCount;
+  motors[idx].pcntLastCount = 0;
+  if (pcntEnabled[idx]) {
+    pcnt_unit_t unit = static_cast<pcnt_unit_t>(idx);
+    pcnt_counter_pause(unit);
+    pcnt_counter_clear(unit);
+    pcnt_counter_resume(unit);
+  }
   ledcStartIfValid(idx, motors[idx].freq);
 }
 
@@ -175,6 +209,13 @@ void startHomingMove(int idx, bool towardHome, long steps, int speed, int phase)
   motors[idx].axisName = AxesNames[idx];
   motors[idx].moveStartPos = motors[idx].currentPos;
   motors[idx].moveStartEncoderCount = motors[idx].encoderCount;
+  motors[idx].pcntLastCount = 0;
+  if (pcntEnabled[idx]) {
+    pcnt_unit_t unit = static_cast<pcnt_unit_t>(idx);
+    pcnt_counter_pause(unit);
+    pcnt_counter_clear(unit);
+    pcnt_counter_resume(unit);
+  }
   ledcStartIfValid(idx, motors[idx].freq);
 }
 
@@ -301,6 +342,9 @@ void stopMotorIdx(int idx) {
   motors[idx].targetPos = motors[idx].currentPos;
   syncEncoderReference(idx);
   ledcStop(idx);
+  if (pcntEnabled[idx]) {
+    pcnt_counter_pause(static_cast<pcnt_unit_t>(idx));
+  }
 }
 
 void serviceEncoders() {
@@ -406,6 +450,39 @@ void serviceMotors() {
         handleHomingSwitchTriggered(i, prevPhase);
         continue;
       }
+    }
+    if (pcntEnabled[i]) {
+      int16_t pcntCountRaw = 0;
+      pcnt_get_counter_value(static_cast<pcnt_unit_t>(i), &pcntCountRaw);
+      long pcntCount = pcntCountRaw;
+      long delta = pcntCount - motors[i].pcntLastCount;
+      if (delta <= 0) continue;
+      motors[i].pcntLastCount = pcntCount;
+      long stepsDone = delta;
+      if (stepsDone >= motors[i].stepsRemaining) {
+        stepsDone = motors[i].stepsRemaining;
+      }
+      motors[i].currentPos += (motors[i].dir ? stepsDone : -stepsDone);
+      motors[i].stepsRemaining -= stepsDone;
+      if (motors[i].stepsRemaining <= 0) {
+        long stepDelta = motors[i].currentPos - motors[i].moveStartPos;
+        long encoderDelta = motors[i].encoderCount - motors[i].moveStartEncoderCount;
+        if (stepDelta != 0 && encoderDelta != 0) {
+          motors[i].encoderCountsPerStep = (double)encoderDelta / (double)stepDelta;
+        }
+        if (!motors[i].homing) {
+          syncEncoderReference(i);
+        }
+        if (motors[i].homing) {
+          handleHomingMoveComplete(i);
+        } else {
+          stopMotorIdx(i);
+        }
+      } else if (pcntCount >= pcntClearThreshold) {
+        pcnt_counter_clear(static_cast<pcnt_unit_t>(i));
+        motors[i].pcntLastCount = 0;
+      }
+      continue;
     }
     unsigned long dt = now - motors[i].lastMicros;
     motors[i].lastMicros = now;
@@ -542,6 +619,15 @@ void setup() {
       pinMode(homingPins[i], INPUT);
       pinModes[i] = 1;
     }
+  }
+  for (int i = 0; i < 6; i++) {
+    if (pcntPins[i] > -1) {
+      pinMode(pcntPins[i], INPUT);
+      if (pcntPins[i] < (int)(sizeof(pinModes) / sizeof(pinModes[0]))) {
+        pinModes[pcntPins[i]] = 1;
+      }
+    }
+    setupPcntAxis(i);
   }
   for (int i = 0; i < 6; i++) {
     if (encoderPinsA[i] > -1) {
