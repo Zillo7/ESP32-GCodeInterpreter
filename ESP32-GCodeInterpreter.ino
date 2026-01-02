@@ -274,7 +274,7 @@ void handleHomingSwitchTriggered(int idx, int prevPhase) {
     motors[idx].encoderPosition = 0;
     setMotorLogicalPosition(idx, 0);
     std::string axis(1, motors[idx].axisName);
-    WriteLine("Homing complete for axis " + axis);
+    WriteLine("Homed: " + axis);
     return;
   }
 }
@@ -293,7 +293,7 @@ void handleHomingMoveComplete(int idx) {
 
   stopMotorIdx(idx);
   std::string axis(1, motors[idx].axisName);
-  WriteLine("Homing failed for axis " + axis + " (switch not detected)");
+  WriteLine("Homing failed: " + axis + " (switch not detected)");
 }
 
 void startHomingSequence(int idx) {
